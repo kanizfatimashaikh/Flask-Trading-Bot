@@ -1,75 +1,88 @@
-from flask import Flask, request
+from flask import Flask, request, jsonify
+import pandas as pd
+import ta
 import datetime
+import random
 
 app = Flask(__name__)
 
-capital = 100000
-lot_size = 500
-open_trades = []
-closed_trades = []
+capital = 100000  # starting capital
+profit = 0
+trade_history = []
 
-def get_option_price(stock_price, type_):
-    base = stock_price * 0.05
-    return round(base + (5 if type_ == 'CE' else 7), 2)
+def calculate_indicators(df):
+    df['ema_5'] = ta.trend.ema_indicator(df['close'], window=5).ema_indicator()
+    df['ema_20'] = ta.trend.ema_indicator(df['close'], window=20).ema_indicator()
+    df['rsi'] = ta.momentum.rsi(df['close'], window=14)
+    df['macd'] = ta.trend.macd_diff(df['close'])
+    return df
 
-@app.route('/', methods=['POST'])
-def webhook():
-    global capital, open_trades, closed_trades
-    data = request.json
-    stock = data.get("stock")
-    signal = data.get("signal")
-    price = float(data.get("price", 0))
+def generate_signal(df):
+    latest = df.iloc[-1]
+    signal = None
+    if latest['ema_5'] > latest['ema_20'] and latest['rsi'] > 60 and latest['macd'] > 0:
+        signal = "BUY"
+    elif latest['ema_5'] < latest['ema_20'] and latest['rsi'] < 40 and latest['macd'] < 0:
+        signal = "SELL"
+    return signal
 
-    if not stock or not signal or not price:
-        return "Invalid data", 400
+def simulate_trade(stock_price, signal, stock_name):
+    global capital, profit
 
-    option_type = "CE" if signal.upper() == "BUY" else "PE"
-    strike_price = round(price * (1.02 if signal.upper() == "BUY" else 0.98))
-    option_price = get_option_price(price, option_type)
-    cost = option_price * lot_size
+    option_type = "CE" if signal == "BUY" else "PE"
+    strike_price = round(stock_price * (1.05 if signal == "BUY" else 0.95), -1)
+    option_price = round(random.uniform(10, 25), 2)
+    lot_size = 500  # simplified assumption
+    total_cost = option_price * lot_size
 
-    if cost > capital:
-        return f"Not enough capital. Available: ₹{capital}", 400
+    if total_cost > capital:
+        return None  # skip if insufficient capital
+
+    capital -= total_cost
+    exit_price = option_price * 1.1  # 10% profit trail
+    pl = (exit_price - option_price) * lot_size
+    capital += total_cost + pl
+    profit += pl
 
     trade = {
-        "stock": stock.upper(),
-        "signal": signal.upper(),
-        "strike": strike_price,
+        "time": str(datetime.datetime.now()),
+        "stock": stock_name,
+        "signal": signal,
         "option": f"{strike_price}{option_type}",
         "entry_price": option_price,
-        "qty": lot_size,
-        "entry_time": datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        "exit_price": round(exit_price, 2),
+        "P&L": round(pl, 2),
+        "capital": round(capital, 2)
     }
+    trade_history.append(trade)
+    return trade
 
-    capital -= cost
-    open_trades.append(trade)
-    print(f"TRADE: {signal.upper()} {stock.upper()} {strike_price}{option_type} @ ₹{option_price} | Capital: ₹{capital}")
-    simulate_trailing_profit()
-    return "Trade Executed", 200
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    data = request.get_json()
+    stock_name = data['stock']
+    df = pd.DataFrame(data['ohlcv'])  # OHLCV data from TradingView alert
+    df.columns = ['time', 'open', 'high', 'low', 'close', 'volume']
 
-def simulate_trailing_profit():
-    global open_trades, closed_trades, capital
-    still_open = []
-    for trade in open_trades:
-        exit_price = round(trade["entry_price"] * 1.10, 2)
-        pnl = (exit_price - trade["entry_price"]) * trade["qty"]
-        capital += exit_price * trade["qty"]
-        trade.update({
-            "exit_price": exit_price,
-            "exit_time": datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            "pnl": round(pnl, 2)
-        })
-        closed_trades.append(trade)
-        print(f"CLOSED: {trade['stock']} {trade['option']} Entry ₹{trade['entry_price']} → Exit ₹{exit_price} | PnL ₹{pnl}")
-    open_trades = still_open
+    df = calculate_indicators(df)
+    signal = generate_signal(df)
+
+    if signal:
+        trade = simulate_trade(df['close'].iloc[-1], signal, stock_name)
+        if trade:
+            return jsonify({"status": "Trade executed", "details": trade})
+        else:
+            return jsonify({"status": "Insufficient capital, trade skipped"})
+    else:
+        return jsonify({"status": "No valid signal"})
 
 @app.route('/report', methods=['GET'])
 def report():
-    return {
-        "capital": capital,
-        "open_trades": open_trades,
-        "closed_trades": closed_trades
-    }
+    return jsonify({
+        "Total Profit": round(profit, 2),
+        "Capital Remaining": round(capital, 2),
+        "Trades": trade_history[-10:]  # show last 10 trades
+    })
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)
+    app.run(debug=True)
