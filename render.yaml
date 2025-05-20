@@ -1,8 +1,6 @@
 services:
   - type: web
-    name: trading-webhook
+    name: options-trading-bot
     env: python
-    plan: free
-    buildCommand: ""
+    buildCommand: pip install -r requirements.txt
     startCommand: python app.py
-    envVars: []
