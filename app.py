@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+import os
 
 app = Flask(__name__)
 
@@ -11,7 +12,6 @@ def webhook():
     signal = data.get('signal')
 
     if symbol and signal:
-        # Simulated trade logic
         print(f"Trade signal received: {signal} {symbol}")
         return jsonify({
             "received": {
@@ -24,4 +24,5 @@ def webhook():
         return jsonify({"error": "Missing symbol or signal"}), 400
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
